@@ -1,5 +1,10 @@
 ChangeLog
 ==========
+
+version 0.70.7  (released 2013-04-23)
+  * [Fixes] Resource exhaustion
+  * Better logging of statedb-related errors
+
 version 0.70.6  (released 2013-04-11)
   * [Fixes] Try to avoid to upload incomplete files
   * [Fixes] Increase read timeout to 300 seconds
