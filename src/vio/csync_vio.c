@@ -217,8 +217,9 @@ void csync_vio_shutdown(CSYNC *ctx) {
       (*ctx->module.finish_fn)(ctx->module.method);
     }
 
+/* GnuTLS, used on most linux distros, does not support dlclose without leaking. */
+#if defined(__APPLE__) || defined(_WIN32)
     /* close the plugin */
-#if 0
     dlclose(ctx->module.handle);
     ctx->module.handle = NULL;
 
