@@ -218,11 +218,13 @@ void csync_vio_shutdown(CSYNC *ctx) {
     }
 
     /* close the plugin */
+#if 0
     dlclose(ctx->module.handle);
     ctx->module.handle = NULL;
 
     ctx->module.method = NULL;
     ctx->module.finish_fn = NULL;
+#endif
   }
 }
 
