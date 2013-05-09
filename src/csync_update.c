@@ -147,7 +147,7 @@ static int _csync_detect_update(CSYNC *ctx, const char *file,
         SAFE_FREE(st);
         st = tmp;
         st->instruction = CSYNC_INSTRUCTION_NONE;
-        CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "file: %s - tmp non zero, mtime %llu", path, st->modtime );
+        CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "file: %s - tmp non zero, mtime %llu", path, (long long) st->modtime );
         tmp = NULL;
       }
       goto fastout; /* Skip copying of the etag. That's an important difference to upstream
