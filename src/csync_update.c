@@ -36,11 +36,13 @@
 #include "csync_statedb.h"
 #include "csync_update.h"
 #include "csync_util.h"
+#include "csync_misc.h"
 
 #include "vio/csync_vio.h"
 
 #define CSYNC_LOG_CATEGORY_NAME "csync.updater"
 #include "csync_log.h"
+#include "csync_rename.h"
 
 /* calculate the hash of a given uri */
 static uint64_t _hash_of_file(CSYNC *ctx, const char *file) {
@@ -197,12 +199,15 @@ static int _csync_detect_update(CSYNC *ctx, const char *file,
         st->instruction = CSYNC_INSTRUCTION_NONE;
     } else {
         /* check if it's a file and has been renamed */
-        if (type == CSYNC_FTW_TYPE_FILE && ctx->current == LOCAL_REPLICA) {
+        if (ctx->current == LOCAL_REPLICA) {
             tmp = csync_statedb_get_stat_by_inode(ctx, fs->inode);
-            if (tmp && tmp->inode == fs->inode) {
+            if (tmp && tmp->inode == fs->inode && (tmp->modtime == fs->mtime || fs->type == CSYNC_FTW_TYPE_DIR)) {
                 CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "inodes: %ld <-> %ld", tmp->inode, fs->inode);
                 /* inode found so the file has been renamed */
                 st->instruction = CSYNC_INSTRUCTION_RENAME;
+                if (fs->type == CSYNC_FTW_TYPE_DIR) {
+                    csync_rename_record(ctx, tmp->path, path);
+                }
                 goto out;
             } else {
                 /* file not found in statedb */
@@ -273,6 +278,11 @@ int csync_walker(CSYNC *ctx, const char *file, const csync_vio_file_stat_t *fs,
   int type = CSYNC_FTW_TYPE_SKIP;
   csync_file_stat_t *st = NULL;
   uint64_t h;
+
+  if (ctx->abort) {
+    ctx->error_code = CSYNC_ERR_ABORTED;
+    return -1;
+  }
 
   switch (flag) {
     case CSYNC_FTW_FLAG_FILE:
@@ -408,7 +418,7 @@ int csync_ftw(CSYNC *ctx, const char *uri, csync_walker_fn fn,
   if ((dh = csync_vio_opendir(ctx, uri)) == NULL) {
     /* permission denied */
     if (errno == EACCES) {
-      return 0;
+       return 0;
     } else if(errno == EIO ) {
       /* Proxy problems (ownCloud) */
       ctx->error_code = CSYNC_ERR_PROXY;
@@ -418,6 +428,7 @@ int csync_ftw(CSYNC *ctx, const char *uri, csync_walker_fn fn,
       CSYNC_LOG(CSYNC_LOG_PRIORITY_ERROR,
           "opendir failed for %s - %s (errno %d)",
           uri, errbuf, errno);
+      ctx->error_code = csync_errno_to_csync_error( CSYNC_ERR_UPDATE );
       goto error;
     }
   }
@@ -428,6 +439,7 @@ int csync_ftw(CSYNC *ctx, const char *uri, csync_walker_fn fn,
 
     d_name = dirent->name;
     if (d_name == NULL) {
+      ctx->error_code = CSYNC_ERR_PARAM;
       goto error;
     }
 
@@ -442,6 +454,7 @@ int csync_ftw(CSYNC *ctx, const char *uri, csync_walker_fn fn,
     if (asprintf(&filename, "%s/%s", uri, d_name) < 0) {
       csync_vio_file_stat_destroy(dirent);
       dirent = NULL;
+      ctx->error_code = CSYNC_ERR_PARAM;
       goto error;
     }
 

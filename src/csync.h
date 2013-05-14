@@ -84,6 +84,7 @@ enum csync_error_codes_e {
   CSYNC_ERR_QUOTA,
   CSYNC_ERR_SERVICE_UNAVAILABLE,
   CSYNC_ERR_FILE_TOO_BIG,
+  CSYNC_ERR_ABORTED,
 
   CSYNC_ERR_UNSPEC
 };
@@ -146,6 +147,7 @@ struct csync_tree_walk_file_s {
 
     const char *rename_path;
     const char *md5;
+    const char *error_string;
 };
 typedef struct csync_tree_walk_file_s TREE_WALK_FILE;
 
@@ -520,6 +522,20 @@ typedef void (*csync_progress_callback) (const char *remote_url, enum csync_noti
  * @param cb            The callback
  */
 int csync_set_progress_callback(CSYNC *ctx, csync_progress_callback cb);
+
+/**
+ * @brief Aborts the current sync run as soon as possible. Can be called from another thread.
+ *
+ * @param ctx           The csync context.
+ */
+void csync_request_abort(CSYNC *ctx);
+
+/**
+ * @brief Clears the abort flag. Can be called from another thread.
+ *
+ * @param ctx           The csync context.
+ */
+void csync_resume(CSYNC *ctx);
 
 
 

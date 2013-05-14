@@ -56,6 +56,7 @@
 #include "vio/csync_vio.h"
 
 #include "csync_log.h"
+#include "csync_rename.h"
 
 static int _key_cmp(const void *key, const void *data) {
   uint64_t a;
@@ -156,6 +157,8 @@ int csync_create(CSYNC **csync, const char *local, const char *remote) {
   ctx->local.list     = 0;
   ctx->remote.list    = 0;
   ctx->current_fs = NULL;
+
+  ctx->abort = false;
 
   *csync = ctx;
   return 0;
@@ -503,6 +506,15 @@ int csync_propagate(CSYNC *ctx) {
   }
   ctx->error_code = CSYNC_ERR_NONE;
 
+  ctx->current = REMOTE_REPLICA;
+  ctx->replica = ctx->remote.type;
+  rc = csync_propagate_rename_dirs(ctx);
+  if (rc < 0) {
+      if( ctx->error_code == CSYNC_ERR_NONE )
+          ctx->error_code = csync_errno_to_csync_error( CSYNC_ERR_PROPAGATE);
+      return -1;
+  }
+
   /* Reconciliation for local replica */
   csync_gettime(&start);
 
@@ -594,6 +606,7 @@ static int _csync_treewalk_visitor(void *obj, void *data) {
       trav.instruction = cur->instruction;
       trav.rename_path = cur->destpath;
       trav.md5 =    cur->md5;
+      trav.error_string = cur->error_string;
 
       rc = (*visitor)(&trav, twctx->userdata);
       cur->instruction = trav.instruction;
@@ -687,6 +700,7 @@ static void _tree_destructor(void *data) {
   freedata = (csync_file_stat_t *) data;
   SAFE_FREE(freedata->md5);
   SAFE_FREE(freedata->destpath);
+  SAFE_FREE(freedata->error_string);
   SAFE_FREE(freedata);
 }
 
@@ -735,10 +749,12 @@ int csync_commit(CSYNC *ctx) {
   int rc = 0;
   char *lock = NULL;
 
-  ctx->error_code = CSYNC_ERR_NONE;
 
   /* maybe the propagate was done using another propagator, let the merger think it has been done */
-  ctx->status = CSYNC_STATUS_DONE;
+  if (ctx->error_code == CSYNC_ERR_NONE)
+    ctx->status = CSYNC_STATUS_DONE;
+
+  ctx->error_code = CSYNC_ERR_NONE;
 
   if (_merge_and_write_statedb(ctx) < 0) {
     CSYNC_LOG(CSYNC_LOG_PRIORITY_DEBUG, "Merge and Write database failed!");
@@ -853,6 +869,12 @@ int csync_destroy(CSYNC *ctx) {
     ctx->progress = next;
   }
 
+  while (ctx->progress) {
+    csync_progressinfo_t *next = ctx->progress->next;
+    csync_statedb_free_progressinfo(ctx->progress);
+    ctx->progress = next;
+  }
+
   /* destroy the rbtrees */
   if (c_rbtree_size(ctx->local.tree) > 0) {
     c_rbtree_destroy(ctx->local.tree, _tree_destructor);
@@ -861,6 +883,8 @@ int csync_destroy(CSYNC *ctx) {
   if (c_rbtree_size(ctx->remote.tree) > 0) {
     c_rbtree_destroy(ctx->remote.tree, _tree_destructor);
   }
+
+  csync_rename_destroy(ctx);
 
   /* free memory */
   c_rbtree_free(ctx->local.tree);
@@ -1173,6 +1197,16 @@ int csync_set_progress_callback(CSYNC* ctx, csync_progress_callback cb)
 
   return 0;
 
+}
+
+void csync_request_abort(CSYNC *ctx)
+{
+    ctx->abort = true;
+}
+
+void csync_resume(CSYNC *ctx)
+{
+    ctx->abort = false;
 }
 
 /* vim: set ts=8 sw=2 et cindent: */
