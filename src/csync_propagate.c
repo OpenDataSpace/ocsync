@@ -161,6 +161,8 @@ static int _csync_push_file(CSYNC *ctx, csync_file_stat_t *st) {
   csync_progressinfo_t *progress_info = NULL;
   /* Check if there is progress info stored in the database for this file */
   progress_info = csync_statedb_get_progressinfo(ctx, st->phash, st->modtime, st->md5);
+  rep_bak = ctx->replica;
+
   if (progress_info && progress_info->error > 3) {
     rc = 1;
     goto out;
@@ -174,16 +176,6 @@ static int _csync_push_file(CSYNC *ctx, csync_file_stat_t *st) {
     hbf_info.transfer_id = progress_info->transferId;
   }
 
-  csync_progressinfo_t *pi = NULL;
-  pi = csync_statedb_get_progressinfo(ctx, st->phash, st->modtime, st->md5);
-  if (pi && pi->error > 3) {
-    if (!st->error_string && pi->error_string)
-        st->error_string = c_strdup(pi->error_string);
-    rc = 1;
-    goto out;
-  }
-
-  rep_bak = ctx->replica;
 
   auri = csync_rename_adjust_path(ctx, st->path);
 
@@ -426,6 +418,11 @@ start_fd_based:
             progress_info->chunk = hbf_info.start_id;
             csync_vio_set_property(ctx, "hbf_info", 0);
           }
+
+          if( errno == ERRNO_USER_ABORT ) {
+            ctx->error_code = CSYNC_ERR_ABORTED;
+            CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "Csync file transmission was ABORTED by user!");
+          }
           goto out;
       }
   } else {
@@ -642,10 +639,8 @@ out:
             csync_vio_unlink(ctx, turi);
       }
     }
-    if (rc != 123) {
-      _csync_record_error(ctx, st, progress_info);
-      progress_info = NULL;
-    }
+    _csync_record_error(ctx, st, progress_info);
+    progress_info = NULL;
   }
 
   csync_statedb_free_progressinfo(progress_info);
@@ -1378,8 +1373,10 @@ static int _csync_propagation_cleanup(CSYNC *ctx) {
 
   for (walk = c_list_last(list); walk != NULL; walk = c_list_prev(walk)) {
     csync_file_stat_t *st = NULL;
+    csync_file_stat_t **pst = NULL;
 
-    st = *((csync_file_stat_t **) walk->data);
+    pst = (csync_file_stat_t **) walk->data;
+    st = *(pst);
 
     if (asprintf(&dir, "%s/%s", uri, st->path) < 0) {
       return -1;
@@ -1394,6 +1391,7 @@ static int _csync_propagation_cleanup(CSYNC *ctx) {
     CSYNC_LOG(CSYNC_LOG_PRIORITY_DEBUG, "CLEANUP  dir: %s", dir);
 
     SAFE_FREE(dir);
+    SAFE_FREE(pst);
   }
 
   return 0;

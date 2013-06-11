@@ -393,6 +393,7 @@ int csync_update(CSYNC *ctx) {
     return rc;
   }
 
+  SAFE_FREE(lock);
   csync_memstat_check(ctx);
 
   /* update detection for local replica */
@@ -401,6 +402,11 @@ int csync_update(CSYNC *ctx) {
   ctx->replica = ctx->local.type;
 
   rc = csync_ftw(ctx, ctx->local.uri, csync_walker, MAX_DEPTH);
+  if (rc < 0) {
+    if(ctx->error_code == CSYNC_ERR_NONE)
+        ctx->error_code = csync_errno_to_csync_error(CSYNC_ERR_UPDATE);
+    return -1;
+  }
 
   csync_gettime(&finish);
 
@@ -409,11 +415,6 @@ int csync_update(CSYNC *ctx) {
       c_secdiff(finish, start), c_rbtree_size(ctx->local.tree));
   csync_memstat_check(ctx);
 
-  if (rc < 0) {
-    if(ctx->error_code == CSYNC_ERR_NONE)
-        ctx->error_code = csync_errno_to_csync_error(CSYNC_ERR_UPDATE);
-    return -1;
-  }
 
   /* update detection for remote replica */
   if( ! ctx->options.local_only_mode ) {
@@ -422,6 +423,11 @@ int csync_update(CSYNC *ctx) {
       ctx->replica = ctx->remote.type;
 
       rc = csync_ftw(ctx, ctx->remote.uri, csync_walker, MAX_DEPTH);
+      if (rc < 0) {
+          if(ctx->error_code == CSYNC_ERR_NONE )
+            ctx->error_code = csync_errno_to_csync_error(CSYNC_ERR_UPDATE);
+          return -1;
+      }
       csync_gettime(&finish);
 
       CSYNC_LOG(CSYNC_LOG_PRIORITY_DEBUG,
@@ -430,11 +436,6 @@ int csync_update(CSYNC *ctx) {
                 c_secdiff(finish, start), c_rbtree_size(ctx->remote.tree));
       csync_memstat_check(ctx);
 
-      if (rc < 0) {
-          if(ctx->error_code == CSYNC_ERR_NONE )
-            ctx->error_code = csync_errno_to_csync_error(CSYNC_ERR_UPDATE);
-          return -1;
-      }
   }
   ctx->status |= CSYNC_STATUS_UPDATE;
 
@@ -767,6 +768,12 @@ int csync_commit(CSYNC *ctx) {
 
   csync_vio_commit(ctx);
 
+  while (ctx->progress) {
+    csync_progressinfo_t *next = ctx->progress->next;
+    csync_statedb_free_progressinfo(ctx->progress);
+    ctx->progress = next;
+  }
+
   /* destroy the rbtrees */
   if (c_rbtree_size(ctx->local.tree) > 0) {
     c_rbtree_destroy(ctx->local.tree, _tree_destructor);
@@ -775,6 +782,8 @@ int csync_commit(CSYNC *ctx) {
   if (c_rbtree_size(ctx->remote.tree) > 0) {
     c_rbtree_destroy(ctx->remote.tree, _tree_destructor);
   }
+
+  csync_rename_destroy(ctx);
 
   /* free memory */
   c_rbtree_free(ctx->local.tree);
@@ -831,6 +840,7 @@ int csync_commit(CSYNC *ctx) {
     goto out;
   }
   csync_lock_remove(ctx, lock);
+  SAFE_FREE(lock);
 
   out:
   return rc;
@@ -861,12 +871,6 @@ int csync_destroy(CSYNC *ctx) {
   /* remove the lock file */
   if (asprintf(&lock, "%s/%s", ctx->options.config_dir, CSYNC_LOCK_FILE) > 0) {
     csync_lock_remove(ctx, lock);
-  }
-
-  while (ctx->progress) {
-    csync_progressinfo_t *next = ctx->progress->next;
-    csync_statedb_free_progressinfo(ctx->progress);
-    ctx->progress = next;
   }
 
   while (ctx->progress) {
@@ -1201,12 +1205,25 @@ int csync_set_progress_callback(CSYNC* ctx, csync_progress_callback cb)
 
 void csync_request_abort(CSYNC *ctx)
 {
+  if (ctx != NULL) {
     ctx->abort = true;
+  }
 }
 
 void csync_resume(CSYNC *ctx)
 {
+  if (ctx != NULL) {
     ctx->abort = false;
+  }
+}
+
+int  csync_abort_requested(CSYNC *ctx)
+{
+  if (ctx != NULL) {
+    return ctx->abort;
+  } else {
+    return (1 == 0);
+  }
 }
 
 /* vim: set ts=8 sw=2 et cindent: */

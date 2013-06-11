@@ -258,18 +258,24 @@ static int configureProxy( ne_session *session )
         re = 0;
     } else if( c_streq(dav_session.proxy_type, "DefaultProxy") ||
                c_streq(dav_session.proxy_type, "HttpProxy")    ||
-               c_streq(dav_session.proxy_type, "HttpCachingProxy") ) {
+               c_streq(dav_session.proxy_type, "HttpCachingProxy") ||
+               c_streq(dav_session.proxy_type, "Socks5Proxy")) {
+
         if( dav_session.proxy_host ) {
             DEBUG_WEBDAV("%s at %s:%d", dav_session.proxy_type, dav_session.proxy_host, port );
-            ne_session_proxy(session, dav_session.proxy_host, port );
+            if (c_streq(dav_session.proxy_type, "Socks5Proxy")) {
+                ne_session_socks_proxy(session, NE_SOCK_SOCKSV5, dav_session.proxy_host, port,
+                                       dav_session.proxy_user, dav_session.proxy_pwd);
+            } else {
+                ne_session_proxy(session, dav_session.proxy_host, port );
+            }
             re = 2;
         } else {
             DEBUG_WEBDAV("%s requested but no proxy host defined.", dav_session.proxy_type );
 	    /* we used to try ne_system_session_proxy here, but we should rather err out
 	       to behave exactly like the caller. */
         }
-    } else if( c_streq(dav_session.proxy_type, "FtpCachingProxy") ||
-               c_streq(dav_session.proxy_type, "Socks5Proxy") ) {
+    } else {
         DEBUG_WEBDAV( "Unsupported Proxy: %s", dav_session.proxy_type );
     }
 
@@ -404,6 +410,30 @@ static void ne_notify_status_cb (void *userdata, ne_session_status status,
     }
 }
 
+// as per http://sourceforge.net/p/predef/wiki/OperatingSystems/
+// extend as required
+static const char* get_platform() {
+#if defined (_WIN32)
+    return "Windows";
+#elif defined(__APPLE__)
+    return "Macintosh";
+#elif defined(__gnu_linux__)
+    return "Linux";
+#elif defined(__DragonFly__)
+    /* might also define __FreeBSD__ */
+    return "DragonFlyBSD";
+#elif defined(__FreeBSD__)
+    return "FreeBSD";
+#elif defined(__NetBSD__)
+    return "NetBSD";
+#elif defined(__OpenBSD__)
+    return "OpenBSD";
+#elif defined(sun) || defined(__sun)
+    return "Solaris";
+#else
+    return "Unknown OS";
+#endif
+}
 
 /*
  * Connect to a DAV server
@@ -473,7 +503,8 @@ static int dav_connect(const char *base_url) {
 
     ne_set_read_timeout(dav_session.ctx, dav_session.read_timeout);
 
-    snprintf( uaBuf, sizeof(uaBuf), "csyncoC/%s",CSYNC_STRINGIFY( LIBCSYNC_VERSION ));
+    snprintf( uaBuf, sizeof(uaBuf), "Mozilla/5.0 (%s) csyncoC/%s",
+              get_platform(), CSYNC_STRINGIFY( LIBCSYNC_VERSION ));
     ne_set_useragent( dav_session.ctx, uaBuf);
     ne_set_server_auth(dav_session.ctx, ne_auth, 0 );
 
@@ -1116,6 +1147,11 @@ static csync_vio_method_handle_t *owncloud_creat(const char *durl, mode_t mode) 
     return handle;
 }
 
+static int _user_want_abort()
+{
+    return csync_abort_requested(dav_session.csync_ctx);
+}
+
 static int owncloud_sendfile(csync_vio_method_handle_t *src, csync_vio_method_handle_t *hdl ) {
     int rc  = 0;
     int neon_stat;
@@ -1182,6 +1218,9 @@ static int owncloud_sendfile(csync_vio_method_handle_t *src, csync_vio_method_ha
             _progresscb(write_ctx->url, CSYNC_NOTIFY_START_UPLOAD, 0 , 0, dav_session.userdata);
           }
 
+          /* Register the abort callback */
+          hbf_set_abort_callback( trans, _user_want_abort );
+
           if( state == HBF_SUCCESS ) {
             chunked_total_size = trans->stat_size;
             /* Transfer all the chunks through the HTTP session using PUT. */
@@ -1191,6 +1230,11 @@ static int owncloud_sendfile(csync_vio_method_handle_t *src, csync_vio_method_ha
           /* Handle errors. */
           if ( state != HBF_SUCCESS ) {
 
+            if( state == HBF_USER_ABORTED ) {
+              DEBUG_WEBDAV("User Aborted file upload!");
+              errno = ERRNO_USER_ABORT;
+              rc = -1;
+            }
             /* If the source file changed during submission, lets try again */
             if( state == HBF_SOURCE_FILE_CHANGE ) {
               if( attempts++ < 30 ) { /* FIXME: How often do we want to try? */
@@ -1236,6 +1280,11 @@ static int owncloud_sendfile(csync_vio_method_handle_t *src, csync_vio_method_ha
 
         if (write_ctx->req)
           ne_request_destroy( write_ctx->req );
+
+        if( _user_want_abort() ) {
+            errno = ERRNO_USER_ABORT;
+            break;
+        }
 
         write_ctx->req = ne_request_create(dav_session.ctx, "GET", clean_uri);;
 
@@ -1597,6 +1646,8 @@ static void owncloud_commit() {
     ne_session_destroy( dav_session.ctx );
   /* DEBUG_WEBDAV( "********** vio_module_shutdown" ); */
 
+  dav_session.ctx = 0;
+
   ne_sock_exit();
   _connected = 0;  /* triggers dav_connect to go through the whole neon setup */
 
@@ -1745,6 +1796,8 @@ csync_vio_method_t *vio_module_init(const char *method_name, const char *args,
 
 void vio_module_shutdown(csync_vio_method_t *method) {
     (void) method;
+
+    owncloud_commit();
 
     SAFE_FREE( dav_session.user );
     SAFE_FREE( dav_session.pwd );

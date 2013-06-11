@@ -28,11 +28,11 @@
 #include <sys/timeb.h>
 #include <sys/time.h>
 
+#include "httpbf.h"
+
 #include <neon/ne_session.h>
 #include <neon/ne_request.h>
-
-
-#include "httpbf.h"
+#include <neon/ne_basic.h>
 
 #ifdef NDEBUG
 #define DEBUG_HBF(...)
@@ -231,7 +231,8 @@ static char* get_transfer_url( hbf_transfer_t *transfer, int indx ) {
         return NULL;
       }
 
-      if( sprintf(res, "%s-chunking-%d-%d-%d", transfer->url, transfer->transfer_id,
+      /* Note: must be %u for unsigned because one does not want '--' */
+      if( sprintf(res, "%s-chunking-%u-%u-%u", transfer->url, transfer->transfer_id,
                    transfer->block_cnt, indx ) < 0 ) {
         return NULL;
       }
@@ -253,11 +254,10 @@ static int dav_request( ne_request *req, int fd, hbf_block_t *blk ) {
     if( ! (blk && req) ) return HBF_PARAM_FAIL;
 
     ne_set_request_body_fd(req, fd, blk->start, blk->size);
-    DEBUG_HBF("HBF: Block: %d , Start: %ld and Size: %ld\n", blk->seq_number, blk->start, blk->size );
+    /* DEBUG_HBF("HBF: Block: %d , Start: %ld and Size: %ld\n", blk->seq_number, blk->start, blk->size ); */
     res = ne_request_dispatch(req);
 
     req_status = ne_get_status( req );
-
 
     switch(res) {
     case NE_OK:
@@ -342,6 +342,43 @@ static Hbf_State validate_source_file( hbf_transfer_t *transfer ) {
   return state;
 }
 
+/* Get the HTTP error code for the last request  */
+static int _hbf_http_error_code(ne_session *session) {
+    const char *msg = ne_get_error( session );
+    char *msg2;
+    int err;
+    err = strtol(msg, &msg2, 10);
+    if (msg == msg2) {
+        err = 0;
+    }
+    return err;
+}
+
+static Hbf_State _hbf_transfer_no_chunk(ne_session *session, hbf_transfer_t *transfer, const char *verb) {
+    int res;
+    const ne_status* req_status;
+
+    ne_request *req = ne_request_create(session, verb ? verb : "PUT", transfer->url);
+    if (!req)
+        return HBF_MEMORY_FAIL;
+
+    ne_set_request_body_fd(req, transfer->fd, 0, transfer->stat_size);
+    DEBUG_HBF("HBF: chunking not supported for %s\n", transfer->url);
+    res = ne_request_dispatch(req);
+    req_status = ne_get_status( req );
+
+    if (res == NE_OK && req_status->klass == 2) {
+        ne_request_destroy(req);
+        return HBF_SUCCESS;
+    }
+
+    if( transfer->error_string ) free( transfer->error_string );
+    transfer->error_string = strdup( ne_get_error(session) );
+    transfer->status_code = req_status->code;
+    ne_request_destroy(req);
+    return HBF_FAIL;
+}
+
 Hbf_State hbf_transfer( ne_session *session, hbf_transfer_t *transfer, const char *verb ) {
     Hbf_State state = HBF_TRANSFER_SUCCESS;
     int cnt;
@@ -367,22 +404,32 @@ Hbf_State hbf_transfer( ne_session *session, hbf_transfer_t *transfer, const cha
 
         if( ! block ) state = HBF_PARAM_FAIL;
 
+        if( transfer->abort_cb ) {
+            int abort = (transfer->abort_cb)();
+            if( abort ) {
+              state = HBF_USER_ABORTED;
+            }
+        }
+
         if( state == HBF_TRANSFER_SUCCESS ) {
             transfer_url = get_transfer_url( transfer, block_id );
             if( ! transfer_url ) {
                 state = HBF_PARAM_FAIL;
             }
         }
-        if( transfer->block_cnt > 1 && cnt > 0 ) {
-          /* The block count is > 1, check size and mtime before transmitting. */
-          state = validate_source_file(transfer);
-          if( state == HBF_SOURCE_FILE_CHANGE ) {
-            /* The source file has changed meanwhile */
-          }
 
+        if( state == HBF_TRANSFER_SUCCESS ) {
+          if( transfer->block_cnt > 1 && cnt > 0 ) {
+            /* The block count is > 1, check size and mtime before transmitting. */
+            state = validate_source_file(transfer);
+            if( state == HBF_SOURCE_FILE_CHANGE ) {
+              /* The source file has changed meanwhile */
+            }
+          }
         }
+
         if( state == HBF_TRANSFER_SUCCESS || state == HBF_SUCCESS ) {
-            ne_request *req = ne_request_create(session, "PUT", transfer_url);
+            ne_request *req = ne_request_create(session, verb, transfer_url);
 
             if( req ) {
                 if( transfer->block_cnt > 1 ) {
@@ -399,6 +446,19 @@ Hbf_State hbf_transfer( ne_session *session, hbf_transfer_t *transfer, const cha
                   transfer->status_code = transfer->block_arr[block_id]->http_result_code;
                 }
                 ne_request_destroy(req);
+
+                if (transfer->block_cnt > 1 && state == HBF_SUCCESS && cnt == 0) {
+                    /* Success on the first chunk is suspicious.
+                       It could happen that the server did not support chunking */
+                    int rc = ne_delete(session, transfer_url);
+                    if (rc == NE_OK && _hbf_http_error_code(session) == 204) {
+                        /* If delete suceeded, it means some proxy strips the OC_CHUNKING header
+                           start again without chunking: */
+                       free( transfer_url );
+                       return _hbf_transfer_no_chunk(session, transfer, verb);
+                    }
+                }
+
             } else {
                 state = HBF_MEMORY_FAIL;
             }
@@ -486,4 +546,11 @@ const char *hbf_error_string( Hbf_State state )
         re = "Unknown error.";
     }
     return re;
+}
+
+void hbf_set_abort_callback( hbf_transfer_t *transfer, hbf_abort_callback cb)
+{
+  if( transfer ) {
+    transfer->abort_cb = cb;
+  }
 }

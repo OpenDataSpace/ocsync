@@ -124,7 +124,7 @@ static int _csync_detect_update(CSYNC *ctx, const char *file,
   if (st == NULL) {
     return -1;
   }
-  CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "file: %s - hash %llu, mtime: %llu",
+  CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "==> file: %s - hash %llu, mtime: %llu",
       path, (unsigned long long ) h, (unsigned long long) fs->mtime);
 
   /* Set instruction by default to none */
@@ -184,7 +184,7 @@ static int _csync_detect_update(CSYNC *ctx, const char *file,
 #endif
     if(tmp && tmp->phash == h ) { /* there is an entry in the database */
         /* we have an update! */
-        CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "time compare: %lu <-> %lu, md5: %s <-> %s",
+        CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "Database entry found, compare: %lu <-> %lu, md5: %s <-> %s",
                   fs->mtime, tmp->modtime, fs->md5, tmp->md5);
         if( !fs->md5) {
             st->instruction = CSYNC_INSTRUCTION_EVAL;
@@ -201,11 +201,11 @@ static int _csync_detect_update(CSYNC *ctx, const char *file,
         /* check if it's a file and has been renamed */
         if (ctx->current == LOCAL_REPLICA) {
             tmp = csync_statedb_get_stat_by_inode(ctx, fs->inode);
-            if (tmp && tmp->inode == fs->inode && (tmp->modtime == fs->mtime || fs->type == CSYNC_FTW_TYPE_DIR)) {
+            if (tmp && tmp->inode == fs->inode && (tmp->modtime == fs->mtime || fs->type == CSYNC_VIO_FILE_TYPE_DIRECTORY)) {
                 CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "inodes: %ld <-> %ld", tmp->inode, fs->inode);
                 /* inode found so the file has been renamed */
                 st->instruction = CSYNC_INSTRUCTION_RENAME;
-                if (fs->type == CSYNC_FTW_TYPE_DIR) {
+                if (fs->type == CSYNC_VIO_FILE_TYPE_DIRECTORY) {
                     csync_rename_record(ctx, tmp->path, path);
                 }
                 goto out;
@@ -266,7 +266,7 @@ fastout:  /* target if the file information is read from database into st */
     default:
       break;
   }
-  CSYNC_LOG(CSYNC_LOG_PRIORITY_DEBUG, "file: %s, instruction: %s", st->path,
+  CSYNC_LOG(CSYNC_LOG_PRIORITY_DEBUG, "file: %s, instruction: %s <<=", st->path,
       csync_instruction_str(st->instruction));
 
   return 0;
@@ -306,6 +306,7 @@ int csync_walker(CSYNC *ctx, const char *file, const csync_vio_file_stat_t *fs,
     }
     SAFE_FREE(st->md5);
     SAFE_FREE(st->destpath);
+    SAFE_FREE(st->error_string);
     SAFE_FREE(st);
 
     type = CSYNC_FTW_TYPE_SKIP;
@@ -405,7 +406,7 @@ int csync_ftw(CSYNC *ctx, const char *uri, csync_walker_fn fn,
   /* If remote, compare the id with the local id. If equal, read all contents from
    * the database. */
   read_from_db = ctx->remote.read_from_db;
-  CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "Incoming read_from_db-Flag for %s: %d",
+  CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "  => Starting to ftw %s, read_from_db-Flag for: %d",
           uri, read_from_db );
   if( ctx->current == REMOTE_REPLICA && !do_read_from_db ) {
       _check_read_from_db(ctx, uri);
@@ -523,10 +524,8 @@ int csync_ftw(CSYNC *ctx, const char *uri, csync_walker_fn fn,
             fs->fields |= CSYNC_VIO_FILE_STAT_FIELDS_MD5;
         }
 
-        CSYNC_LOG(CSYNC_LOG_PRIORITY_DEBUG, "Uniq ID read from Database: %s -> %s", path, fs->md5 ? fs->md5 : "<NULL>" );
+        CSYNC_LOG(CSYNC_LOG_PRIORITY_DEBUG, "Uniq ID from Database: %s -> %s", path, fs->md5 ? fs->md5 : "<NULL>" );
     }
-
-    CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "walk: %s", filename);
 
     previous_fs = ctx->current_fs;
 
@@ -568,7 +567,7 @@ int csync_ftw(CSYNC *ctx, const char *uri, csync_walker_fn fn,
   }
 
   csync_vio_closedir(ctx, dh);
-  CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, "Closing walk for %s with read_from_db %d", uri, read_from_db);
+  CSYNC_LOG(CSYNC_LOG_PRIORITY_TRACE, " <= Closing walk for %s with read_from_db %d", uri, read_from_db);
 
 done:
   ctx->remote.read_from_db = read_from_db;
